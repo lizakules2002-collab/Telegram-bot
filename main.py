@@ -853,13 +853,14 @@ async def pay_card(call: CallbackQuery):
 
     
 # --- START ---
+# --- START ---
 @router.message(CommandStart())
 async def start(message: Message):
 
     user_id = message.from_user.id
     args = message.text.split()
 
-    # 👤 Получаем пользователя
+    # 👤 Проверяем пользователя
     user = await get_user(user_id)
 
     # 👥 Реферал
@@ -886,13 +887,13 @@ async def start(message: Message):
             VALUES (?, ?, ?)
             """, (
                 user_id,
-                "en",
+                None,
                 referrer
             ))
 
             await db.commit()
 
-        # 🌍 Выбор языка
+        # 🌍 Показываем выбор языка
         await message.answer(
             "🌍 Choose your language / Выберите язык",
             reply_markup=LANG_KB
@@ -900,8 +901,18 @@ async def start(message: Message):
 
         return
 
-    # 🌍 Получаем язык
-    lang = user[7] if user and user[7] else "en"
+    # 🌍 Если язык ещё не выбран
+    if not user[7]:
+
+        await message.answer(
+            "🌍 Choose your language / Выберите язык",
+            reply_markup=LANG_KB
+        )
+
+        return
+
+    # 🌍 Язык пользователя
+    lang = user[7]
 
     # 👋 Главное меню
     await message.answer(
@@ -909,6 +920,8 @@ async def start(message: Message):
         reply_markup=await main_menu_kb(user_id)
     )
 
+
+# --- LANGUAGE SELECT ---
 @router.callback_query(F.data.startswith("lang:"))
 async def set_lang(call: CallbackQuery):
 
@@ -917,14 +930,17 @@ async def set_lang(call: CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
 
         await db.execute("""
-        INSERT INTO users (user_id, language)
-        VALUES (?, ?)
-        ON CONFLICT(user_id)
-        DO UPDATE SET language=excluded.language
-        """, (call.from_user.id, lang))
+        UPDATE users
+        SET language=?
+        WHERE user_id=?
+        """, (
+            lang,
+            call.from_user.id
+        ))
 
         await db.commit()
 
+    # 👋 Показываем главное меню
     await call.message.edit_text(
         TEXTS[lang]["main"],
         reply_markup=await main_menu_kb(call.from_user.id)
