@@ -609,57 +609,81 @@ async def show_lang_menu_callback(call: CallbackQuery):
     await call.answer()
 
 # ================== HANDLERS ==================
-@router.message(F.text.startswith("/broadcast"), F.from_user.id == ADMIN_ID)
-async def start_broadcast(message: Message, bot: Bot):
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+
+@router.message(F.text.startswith("/broadcast"))
+async def start_broadcast(message: Message):
+
+    # 🔒 Только админ
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    # 📝 Текст рассылки
     broadcast_text = message.text.replace("/broadcast", "").strip()
-    
+
     if not broadcast_text:
-        await message.answer("❌ Введите текст: <code>/broadcast текст</code>")
-        return
-
-    async with aiosqlite.connect(DB_NAME) as db:
-        # Проверяем, сколько вообще людей в базе для теста
-        async with db.execute("SELECT COUNT(*) FROM users") as c:
-            total_count = (await c.fetchone())[0]
-            logger.info(f"Всего пользователей в БД: {total_count}")
-
-        async with db.execute("SELECT user_id FROM users") as cursor:
-            users = await cursor.fetchall()
-    
-    if not users:
-        await message.answer(f"⚠️ База данных пуста (всего в БД: {total_count}). Рассылать некому.")
-        return
-
-    count = 0
-    for (user_id,) in users:
-        try:
-            await bot.send_message(user_id, broadcast_text)
-            count += 1
-            await asyncio.sleep(0.05) # Защита от спам-фильтра Telegram
-        except Exception as e:
-            logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
-            continue
-            
-    await message.answer(f"✅ <b>Рассылка завершена!</b>\nНайдено в базе: {len(users)}\nОтправлено: {count}")
-
-@router.callback_query(F.data.startswith("lang:"))
-async def set_lang(call: CallbackQuery):
-    lang = call.data.split(":")[1]
-
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "UPDATE users SET language=? WHERE user_id=?",
-            (lang, call.from_user.id)
+        await message.answer(
+            "❌ Использование:\n<code>/broadcast ваш текст</code>",
+            parse_mode="HTML"
         )
-        await db.commit()
+        return
 
-    # сразу показываем главное меню
-    await call.message.edit_text(
-        TEXTS[lang]["main"],
-        reply_markup=await main_menu_kb(call.from_user.id)
+    # 📦 Получаем только активных пользователей
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        async with db.execute("""
+            SELECT user_id
+            FROM users
+            WHERE in_chat = 1
+        """) as cursor:
+
+            users = await cursor.fetchall()
+
+    if not users:
+        await message.answer("⚠️ Нет пользователей для рассылки")
+        return
+
+    success = 0
+    failed = 0
+
+    await message.answer(
+        f"📨 Начинаю рассылку...\n"
+        f"Получателей: {len(users)}"
     )
 
-    await call.answer()
+    # 🚀 Рассылка
+    for (user_id,) in users:
+
+        try:
+            await bot.send_message(
+                user_id,
+                broadcast_text,
+                parse_mode="HTML"
+            )
+
+            success += 1
+
+            # антифлуд
+            await asyncio.sleep(0.1)
+
+        except TelegramForbiddenError:
+            failed += 1
+
+        except TelegramBadRequest:
+            failed += 1
+
+        except Exception as e:
+            logger.error(f"Broadcast error {user_id}: {e}")
+            failed += 1
+
+    # ✅ Итог
+    await message.answer(
+        f"✅ <b>Рассылка завершена</b>\n\n"
+        f"👥 Всего: {len(users)}\n"
+        f"✅ Успешно: {success}\n"
+        f"❌ Ошибок: {failed}",
+        parse_mode="HTML"
+    )
 
 # --- STARS MENU ---
 @router.callback_query(F.data == "stars")
@@ -895,7 +919,7 @@ async def back(call: CallbackQuery):
 @router.chat_member()
 async def on_member_update(event: ChatMemberUpdated):
     try:
-        user_id = event.from_user.id
+        user_id = event.new_chat_member.user.id
 
         if event.new_chat_member.status in ("member", "administrator"):
 
