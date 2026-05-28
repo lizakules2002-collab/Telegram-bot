@@ -855,55 +855,82 @@ async def pay_card(call: CallbackQuery):
 # --- START ---
 @router.message(CommandStart())
 async def start(message: Message):
+
     user_id = message.from_user.id
     args = message.text.split()
 
-    # 1. Получаем данные пользователя из БД
+    # 👤 Получаем пользователя
     user = await get_user(user_id)
 
-    # 2. Проверяем реферальную ссылку
+    # 👥 Реферал
     referrer = None
+
     if len(args) > 1 and args[1].isdigit():
+
         referrer = int(args[1])
+
         if referrer == user_id:
             referrer = None
 
-    # 3. Если пользователя нет в базе (первый запуск)
+    # 🆕 Новый пользователь
     if not user:
+
         async with aiosqlite.connect(DB_NAME) as db:
-            # Записываем пользователя в БД, но language ставим NULL, 
-            # чтобы понять, что он еще не сделал выбор через кнопку.
+
             await db.execute("""
-            INSERT INTO users (user_id, language, referrer)
-            VALUES (?, NULL, ?)
-            """, (user_id, referrer))
+            INSERT INTO users (
+                user_id,
+                language,
+                referrer
+            )
+            VALUES (?, ?, ?)
+            """, (
+                user_id,
+                "en",
+                referrer
+            ))
+
             await db.commit()
-        
-        # Отправляем меню выбора языка
+
+        # 🌍 Выбор языка
         await message.answer(
             "🌍 Choose your language / Выберите язык",
             reply_markup=LANG_KB
         )
+
         return
 
-    # 4. Если пользователь есть, смотрим его язык (индекс 7 в get_user)
-    lang = user[7]
-    
-    # Если язык в БД сброшен (например, нажал /start, но не кликнул на кнопку языка в прошлый раз)
-    if not lang:
-        await message.answer(
-            "🌍 Choose your language / Выберите язык",
-            reply_markup=LANG_KB
-        )
-        return
+    # 🌍 Получаем язык
+    lang = user[7] if user and user[7] else "en"
 
-    # 5. Пользователь уже есть и язык выбран — показываем сразу главное меню
+    # 👋 Главное меню
     await message.answer(
         TEXTS[lang]["main"],
         reply_markup=await main_menu_kb(user_id)
     )
 
+@router.callback_query(F.data.startswith("lang:"))
+async def set_lang(call: CallbackQuery):
 
+    lang = call.data.split(":")[1]
+
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        await db.execute("""
+        INSERT INTO users (user_id, language)
+        VALUES (?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET language=excluded.language
+        """, (call.from_user.id, lang))
+
+        await db.commit()
+
+    await call.message.edit_text(
+        TEXTS[lang]["main"],
+        reply_markup=await main_menu_kb(call.from_user.id)
+    )
+
+    await call.answer()
 # --- BACK ---
 @router.callback_query(F.data == "back")
 async def back(call: CallbackQuery):
